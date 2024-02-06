@@ -1,29 +1,24 @@
 use std::{
     collections::HashMap,
     error::Error,
-    ffi::{CStr, OsStr},
+    ffi::CStr,
     fmt::Display,
-    fs::{self, File, ReadDir},
-    io::{ErrorKind, Read, Write},
-    ops::{Deref, DerefMut},
+    fs::{self, File, OpenOptions, ReadDir},
+    io::{ErrorKind, Write},
     os::{
         fd::{AsFd, AsRawFd, RawFd},
         unix::fs::{FileExt, MetadataExt},
     },
     path::{Path, PathBuf},
-    ptr::{self, null, null_mut},
-    rc::Rc,
-    slice,
+    ptr, slice,
     sync::{Arc, RwLock},
 };
 
+use log::{error, info};
+
 use crate::{
-    bindings::{
-        gboolean, gchar, gconstpointer, gint64, gpointer, guint64, j_trace_file_begin, JBackend,
-        JTrace, JTraceFileOperation,
-    },
+    bindings::{gboolean, gchar, gconstpointer, gint64, gpointer, guint64},
     gbool::{FALSE, TRUE},
-    Backend,
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -37,49 +32,104 @@ struct FileCache {
 
 impl FileCache {
     fn new() -> Self {
+        info!("Initializing new file cache");
         FileCache {
             files: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    fn execute_on<T>(&self, runnable: &dyn Fn(&File) -> T, raw_fd: RawFd) -> Option<T> {
+    fn execute_on<T>(
+        &self,
+        runnable: &dyn Fn(&File) -> std::io::Result<T>,
+        raw_fd: RawFd,
+    ) -> std::io::Result<T> {
         match self.files.read() {
             Ok(lock) => {
                 let f = lock.get(&raw_fd);
-                Some(runnable(f?))
+                match f {
+                    Some(f) => runnable(f),
+                    None => Err(create_error(
+                        "Cannot execute action on file. The file is not present in the cache.",
+                    )),
+                }
             }
-            Err(e) => None,
+            Err(e) => {
+                handle_error(e, Action::Internal);
+                Err(create_error(
+                    "An internal error prevents the action from being executed on the file.",
+                ))
+            }
         }
     }
 
-    fn execute_mut_on<T>(&self, runnable: &dyn Fn(&mut File) -> T, raw_fd: RawFd) -> Option<T> {
+    fn execute_mut_on<T>(
+        &self,
+        runnable: &dyn Fn(&mut File) -> std::io::Result<T>,
+        raw_fd: RawFd,
+    ) -> std::io::Result<T> {
         match self.files.write() {
             Ok(mut lock) => {
                 let f: Option<&mut File> = lock.get_mut(&raw_fd);
-                Some(runnable(f?))
+                match f {
+                    Some(f) => runnable(f),
+                    None => Err(create_error(
+                        "Cannot execute action on file. The file is not present in the cache.",
+                    )),
+                }
             }
-            Err(e) => None,
+            Err(e) => {
+                handle_error(e, Action::Internal);
+                Err(create_error(
+                    "An internal error prevents the action from being executed on the file.",
+                ))
+            }
         }
     }
 
     fn contains(&self, raw_fd: RawFd) -> bool {
-        match (self.files.read()) {
+        match self.files.read() {
             Ok(lock) => lock.contains_key(&raw_fd),
-            Err(e) => false,
+            Err(e) => {
+                handle_error(e, Action::Internal);
+                false
+            }
         }
     }
 
-    fn insert(&self, file: File) -> bool {
+    fn insert(&self, file: File) -> std::io::Result<()> {
         match self.files.write() {
-            Ok(mut lock) => lock.insert(file.as_fd().as_raw_fd(), file).is_none(),
-            Err(e) => false,
+            Ok(mut lock) => {
+                if self.contains(file.as_raw_fd()) {
+                    return Err(create_error("Cannot insert file into cache. The file descriptor is already present in the cache."));
+                }
+                lock.insert(file.as_fd().as_raw_fd(), file);
+                Ok(())
+            }
+            Err(e) => {
+                handle_error(&e, Action::Internal);
+                Err(create_error(
+                    "An internal error prevents the file from being inserted into the cache.",
+                ))
+            }
         }
     }
 
-    fn remove(&self, raw_fd: RawFd) -> Option<File> {
+    fn remove(&self, raw_fd: RawFd) -> std::io::Result<File> {
         match self.files.write() {
-            Ok(mut lock) => lock.remove(&raw_fd),
-            Err(e) => None,
+            Ok(mut lock) => {
+                return match lock.remove(&raw_fd) {
+                    Some(f) => Ok(f),
+                    None => {
+                        Err(create_error("Cannot remove file from cache. The file descriptor is not present in the cache."))
+                    }
+                };
+            }
+            Err(e) => {
+                handle_error(e, Action::Internal);
+                Err(create_error(
+                    "An internal error prevents the file from being removed from the cache.",
+                ))
+            }
         }
     }
 }
@@ -99,13 +149,15 @@ struct BackendIterator {
     pub prefix: Option<String>,
 }
 
+// INIT
+
 pub unsafe extern "C" fn j_init(path: *const gchar, backend_data: *mut gpointer) -> gboolean {
-    finish(backend_init(path), backend_data)
+    finish(Action::Init, backend_init(path), backend_data)
 }
 
 unsafe fn backend_init(path: *const gchar) -> Result<BackendData> {
     let path = CStr::from_ptr(path).to_str()?;
-    let _ = File::open(&path)?;
+    info!("Initializing backend in namespace {path}");
 
     Ok(BackendData {
         file_cache: FileCache::new(),
@@ -113,10 +165,15 @@ unsafe fn backend_init(path: *const gchar) -> Result<BackendData> {
     })
 }
 
+// FINI
+
 pub unsafe extern "C" fn j_fini(backend_data: gpointer) {
     // though unnecessary, 'drop' makes it easier to understand, I think...
+    info!("Releasing file cache");
     drop(Box::from_raw(backend_data.cast::<BackendObject>()));
 }
+
+// CREATE
 
 pub unsafe extern "C" fn j_create(
     backend_data: gpointer,
@@ -124,12 +181,26 @@ pub unsafe extern "C" fn j_create(
     path: *const gchar,
     backend_object: *mut gpointer,
 ) -> gboolean {
-    let backend = &*backend_data.cast::<BackendData>();
-    let path = CStr::from_ptr(path).to_str().unwrap();
-    let f: File = File::open(path).unwrap();
-    backend.file_cache.insert(f);
-    TRUE
+    let backend_data = &*backend_data.cast::<BackendData>();
+    let p: PathBuf = build_path(backend_data, namespace, path);
+
+    finish(
+        Action::Create,
+        backend_create(backend_data, p),
+        backend_object,
+    )
 }
+
+unsafe fn backend_create(backend_data: &BackendData, path: PathBuf) -> Result<BackendObject> {
+    let f: File = OpenOptions::new().read(true).create_new(true).open(&path)?;
+    let fd = f.as_raw_fd();
+
+    backend_data.file_cache.insert(f)?;
+
+    Ok(BackendObject { raw_fd: fd, path })
+}
+
+// OPEN
 
 pub unsafe extern "C" fn j_open(
     backend_data: gpointer,
@@ -139,19 +210,20 @@ pub unsafe extern "C" fn j_open(
 ) -> gboolean {
     let backend_data: &BackendData = &*backend_data.cast();
     let p: PathBuf = build_path(backend_data, namespace, path);
-    let f: File = File::create(&p).unwrap();
 
-    finish(backend_open(backend_data, p), backend_object)
+    finish(Action::Open, backend_open(backend_data, p), backend_object)
 }
 
 unsafe fn backend_open(backend_data: &BackendData, path: PathBuf) -> Result<BackendObject> {
     let f: File = File::create(&path)?;
+    let fd = f.as_raw_fd();
 
-    Ok(BackendObject {
-        raw_fd: f.as_raw_fd(),
-        path,
-    })
+    backend_data.file_cache.insert(f)?;
+
+    Ok(BackendObject { raw_fd: fd, path })
 }
+
+// DELETE
 
 pub unsafe extern "C" fn j_delete(backend_data: gpointer, backend_object: gpointer) -> gboolean {
     let backend_data: &BackendData = &*backend_data.cast();
@@ -159,7 +231,7 @@ pub unsafe extern "C" fn j_delete(backend_data: gpointer, backend_object: gpoint
 
     match backend_delete(&backend_data, &backend_object) {
         Ok(_) => TRUE,
-        Err(_) => FALSE,
+        Err(e) => handle_error(e, Action::Delete),
     }
 }
 
@@ -167,22 +239,19 @@ unsafe fn backend_delete(
     backend_data: &BackendData,
     backend_object: &BackendObject,
 ) -> std::io::Result<()> {
-    match backend_data.file_cache.remove(backend_object.raw_fd) {
-        Some(f) => fs::remove_file(&backend_object.path),
-        None => Err(std::io::Error::new(
-            ErrorKind::Other,
-            "The backend object is not cached",
-        )),
-    }
+    backend_data.file_cache.remove(backend_object.raw_fd)?;
+    fs::remove_file(&backend_object.path)
 }
+
+// CLOSE
 
 pub unsafe extern "C" fn j_close(backend_data: gpointer, backend_object: gpointer) -> gboolean {
     let backend_data: &BackendData = &*backend_data.cast();
     let backend_object: &BackendObject = &*backend_object.cast();
 
     match backend_data.file_cache.remove(backend_object.raw_fd) {
-        Some(_) => TRUE,
-        None => FALSE,
+        Ok(_) => TRUE,
+        Err(e) => handle_error(e, Action::Close),
     }
 }
 
@@ -195,20 +264,24 @@ pub unsafe extern "C" fn j_status(
     let backend_data: &BackendData = &*backend_data.cast();
     let backend_object: &BackendObject = &*backend_object.cast();
     let runnable = |f: &File| {
-        let last_modification: Seconds = f.metadata().unwrap().mtime();
-        let size: Bytes = f.metadata().unwrap().size();
+        let metadata = f.metadata()?;
+        let last_modification: Seconds = metadata.mtime();
+        let size: Bytes = metadata.size();
 
-        (last_modification, size)
+        Ok((last_modification, size))
     };
 
-    let (last_mod, s) = backend_data
+    match backend_data
         .file_cache
         .execute_on(&runnable, backend_object.raw_fd)
-        .unwrap();
-    *modification_time = last_mod;
-    *size = s;
-
-    TRUE
+    {
+        Ok((last_mod, s)) => {
+            *modification_time = last_mod;
+            *size = s;
+            TRUE
+        }
+        Err(e) => handle_error(e, Action::Status),
+    }
 }
 
 pub unsafe extern "C" fn j_sync(backend_data: gpointer, backend_object: gpointer) -> gboolean {
@@ -216,11 +289,13 @@ pub unsafe extern "C" fn j_sync(backend_data: gpointer, backend_object: gpointer
     let backend_object: &BackendObject = &*backend_object.cast();
     let runnable = |f: &mut File| f.flush();
 
-    backend_data
+    match backend_data
         .file_cache
-        .execute_mut_on(&runnable, backend_object.raw_fd);
-
-    TRUE
+        .execute_mut_on(&runnable, backend_object.raw_fd)
+    {
+        Ok(_) => TRUE,
+        Err(e) => handle_error(e, Action::Sync),
+    }
 }
 
 pub unsafe extern "C" fn j_read(
@@ -236,13 +311,16 @@ pub unsafe extern "C" fn j_read(
     let buffer = buffer.cast::<u8>();
     let runnable = |f: &File| f.read_at(slice::from_raw_parts_mut(buffer, length as usize), offset);
 
-    *bytes_read = backend_data
+    match backend_data
         .file_cache
         .execute_on(&runnable, backend_object.raw_fd)
-        .unwrap()
-        .unwrap() as u64;
-
-    TRUE
+    {
+        Ok(n_read) => {
+            *bytes_read = n_read as u64;
+            TRUE
+        }
+        Err(e) => handle_error(e, Action::Read),
+    }
 }
 
 pub unsafe extern "C" fn j_write(
@@ -259,30 +337,65 @@ pub unsafe extern "C" fn j_write(
     let runnable =
         |f: &mut File| f.write_at(slice::from_raw_parts(buffer, length as usize), offset);
 
-    *bytes_written = backend_data
+    match backend_data
         .file_cache
         .execute_mut_on(&runnable, backend_object.raw_fd)
-        .unwrap()
-        .unwrap() as u64;
-
-    TRUE
+    {
+        Ok(n_written) => {
+            *bytes_written = n_written as u64;
+            TRUE
+        }
+        Err(e) => handle_error(e, Action::Write),
+    }
 }
 
 pub unsafe extern "C" fn j_get_all(
-    backend_data: gpointer,
+    _backend_data: gpointer,
     namespace: *const gchar,
     backend_iterator: *mut gpointer,
 ) -> gboolean {
-    TRUE
+    let namespace = CStr::from_ptr(namespace);
+
+    finish(
+        Action::CreateIterAll,
+        backend_get_iterator(namespace, Option::None),
+        backend_iterator,
+    )
 }
 
 pub unsafe extern "C" fn j_get_by_prefix(
-    backend_data: gpointer,
+    _backend_data: gpointer,
     namespace: *const gchar,
     prefix: *const gchar,
     backend_iterator: *mut gpointer,
 ) -> i32 {
-    TRUE
+    let namespace = CStr::from_ptr(namespace);
+    let prefix = match CStr::from_ptr(prefix).to_str() {
+        Ok(p) => String::from(p),
+        Err(e) => return handle_error(e, Action::CreateIterPrefix),
+    };
+
+    finish(
+        Action::CreateIterPrefix,
+        backend_get_iterator(namespace, Some(prefix)),
+        backend_iterator,
+    )
+}
+
+unsafe fn backend_get_iterator(
+    namespace: &CStr,
+    prefix: Option<String>,
+) -> std::io::Result<BackendIterator> {
+    let namespace = Path::new(
+        namespace
+            .to_str()
+            .map_err(|_| create_error("Namespace contains non-UTF-8 characters."))?,
+    );
+
+    Ok(BackendIterator {
+        iter: fs::read_dir(namespace)?,
+        prefix,
+    })
 }
 
 pub unsafe extern "C" fn j_iterate(
@@ -292,22 +405,49 @@ pub unsafe extern "C" fn j_iterate(
 ) -> gboolean {
     let backend_iterator: &mut BackendIterator = &mut *backend_iterator.cast();
 
+    match backend_iterate(backend_iterator) {
+        Ok(opt_name) => match opt_name {
+            Some(n) => {
+                name.write(n.as_ptr().cast::<i8>());
+                TRUE
+            }
+            None => {
+                info!("End of iterator reached. Releasing iterator.");
+                drop(Box::from_raw(backend_iterator));
+                FALSE
+            }
+        },
+        Err(e) => {
+            drop(Box::from_raw(backend_iterator));
+            info!("An error occured. Releasing iterator.");
+            handle_error(e, Action::Iter)
+        }
+    }
+}
+
+unsafe fn backend_iterate(
+    backend_iterator: &mut BackendIterator,
+) -> std::io::Result<Option<String>> {
     while let Some(file) = backend_iterator.iter.next() {
-        let file = file.unwrap();
-        let file_name: String = String::from(file.file_name().to_str().unwrap());
+        let file = file?;
+
+        let file_name: String = String::from(
+            file.file_name()
+                .to_str()
+                .ok_or(create_error("Unable to convert file name to UTF-8"))?,
+        );
+
         let matching = match &backend_iterator.prefix {
             Some(prefix) => file_name.starts_with(prefix),
             None => true,
         };
 
         if matching {
-            *name = file_name.as_ptr().cast::<i8>();
-            return TRUE;
+            return Ok(Some(file_name));
         }
     }
 
-    drop(Box::from_raw(backend_iterator));
-    FALSE
+    Ok(None)
 }
 
 unsafe fn build_path(
@@ -323,7 +463,11 @@ unsafe fn build_path(
         .join(path)
 }
 
-unsafe fn finish<T, E: Display>(res: std::result::Result<T, E>, out: *mut gpointer) -> gboolean {
+unsafe fn finish<T, E: Display>(
+    action: Action,
+    res: std::result::Result<T, E>,
+    out: *mut gpointer,
+) -> gboolean {
     match res {
         Ok(r) => {
             out.cast::<*mut T>().write(raw_box(r));
@@ -331,11 +475,39 @@ unsafe fn finish<T, E: Display>(res: std::result::Result<T, E>, out: *mut gpoint
         }
         Err(e) => {
             out.cast::<*mut T>().write(ptr::null_mut());
-            FALSE
+            handle_error(e, action)
         }
     }
 }
 
 unsafe fn raw_box<T>(val: T) -> *mut T {
     Box::into_raw(Box::new(val))
+}
+
+fn handle_error<E: Display>(error: E, action: Action) -> gboolean {
+    error!("Error during {action:?}: {error}");
+    FALSE
+}
+
+fn create_error(s: &str) -> std::io::Error {
+    std::io::Error::new(ErrorKind::Other, s)
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+enum Action {
+    Init,
+    Fini,
+    Create,
+    Delete,
+    Open,
+    Close,
+    Status,
+    Sync,
+    Read,
+    Write,
+    Iter,
+    CreateIterAll,
+    CreateIterPrefix,
+    Internal,
 }
