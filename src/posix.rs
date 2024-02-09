@@ -26,12 +26,12 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 type Bytes = u64;
 type Seconds = i64;
 
-struct FileCache {
+pub struct FileCache {
     files: Arc<RwLock<HashMap<i32, File>>>,
 }
 
 impl FileCache {
-    fn new() -> Self {
+    pub fn new() -> Self {
         info!("Initializing new file cache");
         FileCache {
             files: Arc::new(RwLock::new(HashMap::new())),
@@ -86,6 +86,7 @@ impl FileCache {
         }
     }
 
+    #[allow(dead_code)]
     fn contains(&self, raw_fd: RawFd) -> bool {
         match self.files.read() {
             Ok(lock) => lock.contains_key(&raw_fd),
@@ -99,7 +100,7 @@ impl FileCache {
     fn insert(&self, file: File) -> std::io::Result<()> {
         match self.files.write() {
             Ok(mut lock) => {
-                if self.contains(file.as_raw_fd()) {
+                if lock.contains_key(&file.as_raw_fd()) {
                     return Err(create_error("Cannot insert file into cache. The file descriptor is already present in the cache."));
                 }
                 lock.insert(file.as_fd().as_raw_fd(), file);
@@ -134,17 +135,17 @@ impl FileCache {
     }
 }
 
-struct BackendData {
+pub struct BackendData {
     pub file_cache: FileCache,
     pub namespace: String,
 }
 
-struct BackendObject {
+pub struct BackendObject {
     pub raw_fd: RawFd,
     pub path: PathBuf,
 }
 
-struct BackendIterator {
+pub struct BackendIterator {
     pub iter: ReadDir,
     pub prefix: Option<String>,
 }
@@ -215,11 +216,10 @@ pub unsafe extern "C" fn j_open(
 }
 
 unsafe fn backend_open(backend_data: &BackendData, path: PathBuf) -> Result<BackendObject> {
-    let f: File = File::create(&path)?;
+    info!("{path:?}");
+    let f: File = File::open(&path)?;
     let fd = f.as_raw_fd();
-
     backend_data.file_cache.insert(f)?;
-
     Ok(BackendObject { raw_fd: fd, path })
 }
 
@@ -470,7 +470,7 @@ unsafe fn finish<T, E: Display>(
 ) -> gboolean {
     match res {
         Ok(r) => {
-            out.cast::<*mut T>().write(raw_box(r));
+            out.cast::<*mut T>().write(Box::into_raw(Box::new(r)));
             TRUE
         }
         Err(e) => {
@@ -478,10 +478,6 @@ unsafe fn finish<T, E: Display>(
             handle_error(e, action)
         }
     }
-}
-
-unsafe fn raw_box<T>(val: T) -> *mut T {
-    Box::into_raw(Box::new(val))
 }
 
 fn handle_error<E: Display>(error: E, action: Action) -> gboolean {

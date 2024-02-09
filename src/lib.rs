@@ -8,9 +8,9 @@ use log::info;
 
 #[allow(dead_code)]
 #[allow(nonstandard_style)]
-mod bindings;
-mod gbool;
-mod posix;
+pub mod bindings;
+pub mod gbool;
+pub mod posix;
 
 pub enum Backend {
     Posix,
@@ -37,7 +37,7 @@ pub fn create_backend() -> JBackend {
 
 generate_backend!(posix);
 
-fn get_backend(backend_type: Backend) -> ObjectBackend {
+pub fn get_backend(backend_type: Backend) -> ObjectBackend {
     // TODO backends
     match backend_type {
         Backend::Posix => posix(),
