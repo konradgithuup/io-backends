@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     error::Error,
-    ffi::CStr,
+    ffi::{CStr, CString},
     fmt::Display,
     fs::{self, File, OpenOptions, ReadDir},
     io::{ErrorKind, Write},
@@ -9,7 +9,7 @@ use std::{
         fd::{AsFd, AsRawFd, RawFd},
         unix::fs::{FileExt, MetadataExt},
     },
-    path::{Path, PathBuf},
+    path::PathBuf,
     ptr, slice,
     sync::{Arc, RwLock},
 };
@@ -87,7 +87,7 @@ impl FileCache {
     }
 
     #[allow(dead_code)]
-    fn contains(&self, raw_fd: RawFd) -> bool {
+    pub fn contains(&self, raw_fd: RawFd) -> bool {
         match self.files.read() {
             Ok(lock) => lock.contains_key(&raw_fd),
             Err(e) => {
@@ -140,6 +140,16 @@ pub struct BackendData {
     pub namespace: String,
 }
 
+impl BackendData {
+    pub fn contains(&self, raw_fd: RawFd) -> bool {
+        return self.file_cache.contains(raw_fd);
+    }
+
+    pub fn check_namespace(&self, expected: &str) -> bool {
+        return self.namespace.as_str() == expected;
+    }
+}
+
 pub struct BackendObject {
     pub raw_fd: RawFd,
     pub path: PathBuf,
@@ -148,6 +158,7 @@ pub struct BackendObject {
 pub struct BackendIterator {
     pub iter: ReadDir,
     pub prefix: Option<String>,
+    pub current_name: CString,
 }
 
 // INIT
@@ -183,17 +194,26 @@ pub unsafe extern "C" fn j_create(
     backend_object: *mut gpointer,
 ) -> gboolean {
     let backend_data = &*backend_data.cast::<BackendData>();
-    let p: PathBuf = build_path(backend_data, namespace, path);
 
     finish(
         Action::Create,
-        backend_create(backend_data, p),
+        backend_create(backend_data, namespace, path),
         backend_object,
     )
 }
 
-unsafe fn backend_create(backend_data: &BackendData, path: PathBuf) -> Result<BackendObject> {
-    let f: File = OpenOptions::new().read(true).create_new(true).open(&path)?;
+unsafe fn backend_create(
+    backend_data: &BackendData,
+    namespace: *const gchar,
+    path: *const gchar,
+) -> Result<BackendObject> {
+    let path: PathBuf = build_path(backend_data, Vec::from([namespace, path]))?;
+
+    let f: File = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create_new(true)
+        .open(&path)?;
     let fd = f.as_raw_fd();
 
     backend_data.file_cache.insert(f)?;
@@ -210,14 +230,22 @@ pub unsafe extern "C" fn j_open(
     backend_object: *mut gpointer,
 ) -> gboolean {
     let backend_data: &BackendData = &*backend_data.cast();
-    let p: PathBuf = build_path(backend_data, namespace, path);
 
-    finish(Action::Open, backend_open(backend_data, p), backend_object)
+    finish(
+        Action::Open,
+        backend_open(backend_data, namespace, path),
+        backend_object,
+    )
 }
 
-unsafe fn backend_open(backend_data: &BackendData, path: PathBuf) -> Result<BackendObject> {
-    info!("{path:?}");
-    let f: File = File::open(&path)?;
+unsafe fn backend_open(
+    backend_data: &BackendData,
+    namespace: *const gchar,
+    path: *const gchar,
+) -> Result<BackendObject> {
+    let path = build_path(backend_data, Vec::from([namespace, path]))?;
+
+    let f: File = OpenOptions::new().read(true).append(true).open(&path)?;
     let fd = f.as_raw_fd();
     backend_data.file_cache.insert(f)?;
     Ok(BackendObject { raw_fd: fd, path })
@@ -350,51 +378,48 @@ pub unsafe extern "C" fn j_write(
 }
 
 pub unsafe extern "C" fn j_get_all(
-    _backend_data: gpointer,
+    backend_data: gpointer,
     namespace: *const gchar,
     backend_iterator: *mut gpointer,
 ) -> gboolean {
-    let namespace = CStr::from_ptr(namespace);
+    let backend_data: &BackendData = &*backend_data.cast::<BackendData>();
 
     finish(
         Action::CreateIterAll,
-        backend_get_iterator(namespace, Option::None),
+        backend_get_iterator(&backend_data, namespace, Option::None),
         backend_iterator,
     )
 }
 
 pub unsafe extern "C" fn j_get_by_prefix(
-    _backend_data: gpointer,
+    backend_data: gpointer,
     namespace: *const gchar,
     prefix: *const gchar,
     backend_iterator: *mut gpointer,
 ) -> i32 {
-    let namespace = CStr::from_ptr(namespace);
-    let prefix = match CStr::from_ptr(prefix).to_str() {
-        Ok(p) => String::from(p),
-        Err(e) => return handle_error(e, Action::CreateIterPrefix),
-    };
+    let backend_data: &BackendData = &*backend_data.cast::<BackendData>();
 
     finish(
         Action::CreateIterPrefix,
-        backend_get_iterator(namespace, Some(prefix)),
+        backend_get_iterator(backend_data, namespace, Some(prefix)),
         backend_iterator,
     )
 }
 
 unsafe fn backend_get_iterator(
-    namespace: &CStr,
-    prefix: Option<String>,
+    backend_data: &BackendData,
+    namespace: *const gchar,
+    prefix: Option<*const gchar>,
 ) -> std::io::Result<BackendIterator> {
-    let namespace = Path::new(
-        namespace
-            .to_str()
-            .map_err(|_| create_error("Namespace contains non-UTF-8 characters."))?,
-    );
+    let namespace = build_path(backend_data, Vec::from([namespace]))?;
 
     Ok(BackendIterator {
         iter: fs::read_dir(namespace)?,
-        prefix,
+        prefix: match prefix {
+            Some(cs) => Some(convert_cstring(cs)?),
+            None => None,
+        },
+        current_name: CString::default(),
     })
 }
 
@@ -408,7 +433,8 @@ pub unsafe extern "C" fn j_iterate(
     match backend_iterate(backend_iterator) {
         Ok(opt_name) => match opt_name {
             Some(n) => {
-                name.write(n.as_ptr().cast::<i8>());
+                backend_iterator.current_name = n;
+                name.write(backend_iterator.current_name.as_ptr().cast::<i8>());
                 TRUE
             }
             None => {
@@ -427,7 +453,7 @@ pub unsafe extern "C" fn j_iterate(
 
 unsafe fn backend_iterate(
     backend_iterator: &mut BackendIterator,
-) -> std::io::Result<Option<String>> {
+) -> std::io::Result<Option<CString>> {
     while let Some(file) = backend_iterator.iter.next() {
         let file = file?;
 
@@ -443,7 +469,7 @@ unsafe fn backend_iterate(
         };
 
         if matching {
-            return Ok(Some(file_name));
+            return Ok(Some(CString::new(file_name)?));
         }
     }
 
@@ -452,15 +478,19 @@ unsafe fn backend_iterate(
 
 unsafe fn build_path(
     backend_data: &BackendData,
-    namespace: *const gchar,
-    path: *const gchar,
-) -> PathBuf {
-    let path = CStr::from_ptr(path).to_str().unwrap();
-    let namespace = CStr::from_ptr(namespace).to_str().unwrap();
+    appends: Vec<*const gchar>,
+) -> std::io::Result<PathBuf> {
+    appends.iter().map(|p| convert_cstring(*p)).fold(
+        Ok(PathBuf::new().join(&backend_data.namespace)),
+        |p1: std::io::Result<PathBuf>, p2: std::io::Result<String>| Ok(p1?.join(p2?)),
+    )
+}
 
-    Path::new(backend_data.namespace.as_str())
-        .join(namespace)
-        .join(path)
+unsafe fn convert_cstring(s: *const gchar) -> std::io::Result<String> {
+    match CStr::from_ptr(s).to_str() {
+        Ok(cs) => Ok(String::from(cs)),
+        Err(e) => Err(create_error(e.to_string().as_str())),
+    }
 }
 
 unsafe fn finish<T, E: Display>(
