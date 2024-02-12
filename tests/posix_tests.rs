@@ -7,8 +7,8 @@ use assert_fs::fixture::PathChild;
 use assert_fs::TempDir;
 use common::{setup, shutdown, CREATE_FILE, DELETE_FILE, READ_FILE, WRITE_FILE};
 use io_backends::bindings::{gpointer, JBackend__bindgen_ty_1__bindgen_ty_1 as ObjectBackend};
-use io_backends::gbool::{FALSE, TRUE};
-use io_backends::posix::{BackendData, BackendIterator, BackendObject, FileCache};
+use io_backends::common::prelude::{FALSE, TRUE};
+use io_backends::posix::prelude::{BackendData, BackendIterator, BackendObject, FileCache};
 use io_backends::{get_backend, Backend};
 use log::{error, info, warn};
 

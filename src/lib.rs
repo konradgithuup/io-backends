@@ -9,7 +9,7 @@ use log::info;
 #[allow(dead_code)]
 #[allow(nonstandard_style)]
 pub mod bindings;
-pub mod gbool;
+pub mod common;
 pub mod posix;
 
 pub enum Backend {
@@ -52,19 +52,19 @@ macro_rules! generate_backend {
     ($module_name: ident) => {
         fn $module_name() -> ObjectBackend {
             ObjectBackend {
-                backend_init: Some($module_name::j_init),
-                backend_fini: Some($module_name::j_fini),
-                backend_create: Some($module_name::j_create),
-                backend_open: Some($module_name::j_open),
-                backend_delete: Some($module_name::j_delete),
-                backend_close: Some($module_name::j_close),
-                backend_status: Some($module_name::j_status),
-                backend_sync: Some($module_name::j_sync),
-                backend_read: Some($module_name::j_read),
-                backend_write: Some($module_name::j_write),
-                backend_get_all: Some($module_name::j_get_all),
-                backend_get_by_prefix: Some($module_name::j_get_by_prefix),
-                backend_iterate: Some($module_name::j_iterate),
+                backend_init: Some($module_name::prelude::j_init),
+                backend_fini: Some($module_name::prelude::j_fini),
+                backend_create: Some($module_name::prelude::j_create),
+                backend_open: Some($module_name::prelude::j_open),
+                backend_delete: Some($module_name::prelude::j_delete),
+                backend_close: Some($module_name::prelude::j_close),
+                backend_status: Some($module_name::prelude::j_status),
+                backend_sync: Some($module_name::prelude::j_sync),
+                backend_read: Some($module_name::prelude::j_read),
+                backend_write: Some($module_name::prelude::j_write),
+                backend_get_all: Some($module_name::prelude::j_get_all),
+                backend_get_by_prefix: Some($module_name::prelude::j_get_by_prefix),
+                backend_iterate: Some($module_name::prelude::j_iterate),
             }
         }
     };
