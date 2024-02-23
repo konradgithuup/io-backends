@@ -1,34 +1,29 @@
+#![allow(dead_code)]
 use std::ffi::{CStr, CString};
 use std::fs::{self};
 use std::os::raw::c_void;
 use std::path::PathBuf;
 
+use crate::test_facility::filesystem::{
+    setup, shutdown, CREATE_FILE, DELETE_FILE, READ_FILE, WRITE_FILE,
+};
+
 use assert_fs::fixture::PathChild;
 use assert_fs::TempDir;
-use common::{setup, shutdown, CREATE_FILE, DELETE_FILE, READ_FILE, WRITE_FILE};
-use io_backends::bindings::{gpointer, JBackend__bindgen_ty_1__bindgen_ty_1 as ObjectBackend};
-use io_backends::common::prelude::{FALSE, TRUE};
-use io_backends::posix::prelude::{BackendData, BackendIterator, BackendObject, FileCache};
-use io_backends::{get_backend, Backend};
+
+use crate::bindings::{gpointer, JBackend__bindgen_ty_1__bindgen_ty_1 as ObjectBackend};
+use crate::common::prelude::{BackendIterator, BackendObject, PosixData, FALSE, TRUE};
 use log::{error, info, warn};
 
-mod common;
-
-#[test]
-fn test_workflow() {
-    env_logger::builder()
+pub fn test_workflow(backend: &ObjectBackend, data_factory: impl Fn(String) -> *mut gpointer) {
+    let _ = env_logger::builder()
         .filter_level(log::LevelFilter::Debug)
-        .filter_module("io_backends", log::LevelFilter::Warn)
-        .init();
+        //        .filter_module("io_backends", log::LevelFilter::Warn)
+        .try_init();
 
     let temp = setup();
 
-    let backend: ObjectBackend = get_backend(Backend::Posix);
-    let backend_data: *mut gpointer = Box::into_raw(Box::new(BackendData {
-        file_cache: FileCache::new(),
-        namespace: String::new(),
-    }))
-    .cast::<gpointer>();
+    let backend_data = data_factory(String::from(temp.to_str().unwrap()));
 
     let read_file: *mut gpointer = Box::into_raw(Box::new(BackendObject {
         raw_fd: 0,
@@ -101,8 +96,6 @@ fn test_workflow() {
             &temp,
         );
 
-        test_read("backend_read", &backend, *backend_data, *read_file);
-
         test_write_sync(
             "backend_write_to_opened",
             &backend,
@@ -120,6 +113,8 @@ fn test_workflow() {
             CREATE_FILE,
             &temp,
         );
+
+        test_read("backend_read", &backend, *backend_data, *read_file);
 
         test_status("backend_status", &backend, *backend_data, *read_file);
 
@@ -162,7 +157,6 @@ fn test_workflow() {
             &mut Vec::from([String::from("prefix_a.txt"), String::from("prefix_b.txt")]),
         );
     }
-
     shutdown(temp);
 }
 
@@ -353,7 +347,6 @@ fn test_write_sync(
             .to_owned()
             .into_boxed_slice();
         let bytes_written = Box::into_raw(Box::new(0u64));
-
         let ret = backend.backend_write.unwrap()(
             backend_data,
             backend_object,
@@ -476,7 +469,7 @@ fn test_close(
             return;
         }
 
-        let backend_data = &*backend_data.cast::<BackendData>();
+        let backend_data = &*backend_data.cast::<PosixData>();
         let backend_object = &*backend_object.cast::<BackendObject>();
         handle(
             "postcondition",

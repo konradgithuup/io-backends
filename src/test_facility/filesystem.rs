@@ -3,7 +3,6 @@ use assert_fs::{
     TempDir,
 };
 use log::{debug, error, info};
-
 pub const WRITE_FILE: &'static str = "write.txt";
 pub const READ_FILE: &'static str = "read.txt";
 pub const DELETE_FILE: &'static str = "delete.txt";

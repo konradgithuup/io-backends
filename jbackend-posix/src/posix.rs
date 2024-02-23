@@ -1,160 +1,19 @@
 use std::{
-    collections::HashMap,
     ffi::CString,
     fmt::Display,
-    fs::{self, File, OpenOptions, ReadDir},
+    fs::{self, File, OpenOptions},
     io::Write,
     os::{
-        fd::{AsFd, AsRawFd, RawFd},
+        fd::AsRawFd,
         unix::fs::{FileExt, MetadataExt},
     },
     path::PathBuf,
     ptr, slice,
-    sync::{Arc, RwLock},
 };
 
 use log::{error, info};
 
-use crate::{
-    bindings::{gboolean, gchar, gconstpointer, gint64, gpointer, guint64},
-    cast_ptr, common,
-};
-
-use common::prelude::*;
-
-type Bytes = u64;
-type Seconds = i64;
-
-pub struct FileCache {
-    files: Arc<RwLock<HashMap<i32, File>>>,
-}
-
-impl FileCache {
-    pub fn new() -> Self {
-        info!("Initializing new file cache");
-        FileCache {
-            files: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    fn execute_on<T>(&self, runnable: &dyn Fn(&File) -> Result<T>, raw_fd: RawFd) -> Result<T> {
-        match self.files.read() {
-            Ok(lock) => {
-                let f = lock.get(&raw_fd);
-                match f {
-                    Some(f) => runnable(f),
-                    None => Err(BackendError::new_internal(
-                        "Cannot execute action on file. The file is not present in the cache.",
-                    )),
-                }
-            }
-            Err(e) => {
-                handle_error(e);
-                Err(BackendError::new_internal(
-                    "An internal error prevents the action from being executed on the file.",
-                ))
-            }
-        }
-    }
-
-    fn execute_mut_on<T>(
-        &self,
-        runnable: &dyn Fn(&mut File) -> Result<T>,
-        raw_fd: RawFd,
-    ) -> Result<T> {
-        match self.files.write() {
-            Ok(mut lock) => {
-                let f: Option<&mut File> = lock.get_mut(&raw_fd);
-                match f {
-                    Some(f) => runnable(f),
-                    None => Err(BackendError::new_internal(
-                        "Cannot execute action on file. The file is not present in the cache.",
-                    )),
-                }
-            }
-            Err(e) => {
-                handle_error(e);
-                Err(BackendError::new_internal(
-                    "An internal error prevents the action from being executed on the file.",
-                ))
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn contains(&self, raw_fd: RawFd) -> bool {
-        match self.files.read() {
-            Ok(lock) => lock.contains_key(&raw_fd),
-            Err(e) => {
-                handle_error(e);
-                false
-            }
-        }
-    }
-
-    fn insert(&self, file: File) -> Result<()> {
-        match self.files.write() {
-            Ok(mut lock) => {
-                if lock.contains_key(&file.as_raw_fd()) {
-                    return Err(BackendError::new_internal("Cannot insert file into cache. The file descriptor is already present in the cache."));
-                }
-                lock.insert(file.as_fd().as_raw_fd(), file);
-                Ok(())
-            }
-            Err(e) => {
-                handle_error(&e);
-                Err(BackendError::new_internal(
-                    "An internal error prevents the file from being inserted into the cache.",
-                ))
-            }
-        }
-    }
-
-    fn remove(&self, raw_fd: RawFd) -> Result<File> {
-        match self.files.write() {
-            Ok(mut lock) => {
-                return match lock.remove(&raw_fd) {
-                    Some(f) => Ok(f),
-                    None => {
-                        Err(BackendError::new_internal("Cannot remove file from cache. The file descriptor is not present in the cache."))
-                    }
-                };
-            }
-            Err(e) => {
-                handle_error(e);
-                Err(BackendError::new_internal(
-                    "An internal error prevents the file from being removed from the cache.",
-                ))
-            }
-        }
-    }
-}
-
-pub struct BackendData {
-    pub file_cache: FileCache,
-    pub namespace: String,
-}
-
-impl BackendData {
-    pub fn contains(&self, raw_fd: RawFd) -> bool {
-        return self.file_cache.contains(raw_fd);
-    }
-
-    pub fn check_namespace(&self, expected: &str) -> bool {
-        return self.namespace.as_str() == expected;
-    }
-}
-
-pub struct BackendObject {
-    pub raw_fd: RawFd,
-    pub path: PathBuf,
-}
-
-pub struct BackendIterator {
-    pub iter: ReadDir,
-    pub prefix: Option<String>,
-    pub current_name: CString,
-}
+use io_backends::prelude::*;
 
 // INIT
 
@@ -162,11 +21,11 @@ pub unsafe extern "C" fn j_init(path: *const gchar, backend_data: *mut gpointer)
     finish(backend_init(path), backend_data)
 }
 
-unsafe fn backend_init(path: *const gchar) -> Result<BackendData> {
+unsafe fn backend_init(path: *const gchar) -> Result<PosixData> {
     let path = read_str(path).map_err(|e| e.set_action(Action::Init))?;
     info!("Initializing backend in namespace {path}");
 
-    Ok(BackendData {
+    Ok(PosixData {
         file_cache: FileCache::new(),
         namespace: path,
     })
@@ -188,7 +47,7 @@ pub unsafe extern "C" fn j_create(
     path: *const gchar,
     backend_object: *mut gpointer,
 ) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
 
     finish(
         backend_create(backend_data, namespace, path),
@@ -197,7 +56,7 @@ pub unsafe extern "C" fn j_create(
 }
 
 unsafe fn backend_create(
-    backend_data: &BackendData,
+    backend_data: &PosixData,
     namespace: *const gchar,
     path: *const gchar,
 ) -> Result<BackendObject> {
@@ -214,7 +73,7 @@ unsafe fn backend_create(
 
     backend_data
         .file_cache
-        .insert(f)
+        .insert(f, fd)
         .map_err(|e| e.set_action(Action::Create))?;
 
     Ok(BackendObject { raw_fd: fd, path })
@@ -228,13 +87,13 @@ pub unsafe extern "C" fn j_open(
     path: *const gchar,
     backend_object: *mut gpointer,
 ) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
 
     finish(backend_open(backend_data, namespace, path), backend_object)
 }
 
 unsafe fn backend_open(
-    backend_data: &BackendData,
+    backend_data: &PosixData,
     namespace: *const gchar,
     path: *const gchar,
 ) -> Result<BackendObject> {
@@ -248,7 +107,7 @@ unsafe fn backend_open(
     let fd = f.as_raw_fd();
     backend_data
         .file_cache
-        .insert(f)
+        .insert(f, fd)
         .map_err(|e| e.set_action(Action::Open))?;
     Ok(BackendObject { raw_fd: fd, path })
 }
@@ -256,7 +115,7 @@ unsafe fn backend_open(
 // DELETE
 
 pub unsafe extern "C" fn j_delete(backend_data: gpointer, backend_object: gpointer) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
 
     match backend_delete(&backend_data, &backend_object) {
@@ -265,7 +124,7 @@ pub unsafe extern "C" fn j_delete(backend_data: gpointer, backend_object: gpoint
     }
 }
 
-unsafe fn backend_delete(backend_data: &BackendData, backend_object: &BackendObject) -> Result<()> {
+unsafe fn backend_delete(backend_data: &PosixData, backend_object: &BackendObject) -> Result<()> {
     backend_data
         .file_cache
         .remove(backend_object.raw_fd)
@@ -276,7 +135,7 @@ unsafe fn backend_delete(backend_data: &BackendData, backend_object: &BackendObj
 // CLOSE
 
 pub unsafe extern "C" fn j_close(backend_data: gpointer, backend_object: gpointer) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
 
     match backend_data.file_cache.remove(backend_object.raw_fd) {
@@ -291,7 +150,7 @@ pub unsafe extern "C" fn j_status(
     modification_time: *mut gint64,
     size: *mut guint64,
 ) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
 
     let runnable = |f: &File| {
@@ -316,7 +175,7 @@ pub unsafe extern "C" fn j_status(
 }
 
 pub unsafe extern "C" fn j_sync(backend_data: gpointer, backend_object: gpointer) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
 
     let runnable = |f: &mut File| f.flush().map_err(|e| BackendError::map(&e, Action::Sync));
@@ -337,7 +196,7 @@ pub unsafe extern "C" fn j_read(
     offset: guint64,
     bytes_read: *mut guint64,
 ) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
 
     let buffer = buffer.cast::<u8>();
@@ -366,7 +225,7 @@ pub unsafe extern "C" fn j_write(
     offset: guint64,
     bytes_written: *mut guint64,
 ) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
 
     let buffer = buffer.cast::<u8>();
@@ -392,7 +251,7 @@ pub unsafe extern "C" fn j_get_all(
     namespace: *const gchar,
     backend_iterator: *mut gpointer,
 ) -> gboolean {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
 
     finish(
         backend_get_iterator(&backend_data, namespace, Option::None)
@@ -407,7 +266,7 @@ pub unsafe extern "C" fn j_get_by_prefix(
     prefix: *const gchar,
     backend_iterator: *mut gpointer,
 ) -> i32 {
-    cast_ptr!(backend_data, BackendData);
+    cast_ptr!(backend_data, PosixData);
 
     finish(
         backend_get_iterator(backend_data, namespace, Some(prefix))
@@ -417,7 +276,7 @@ pub unsafe extern "C" fn j_get_by_prefix(
 }
 
 unsafe fn backend_get_iterator(
-    backend_data: &BackendData,
+    backend_data: &PosixData,
     namespace: *const gchar,
     prefix: Option<*const gchar>,
 ) -> Result<BackendIterator> {
@@ -482,7 +341,7 @@ unsafe fn backend_iterate(backend_iterator: &mut BackendIterator) -> Result<Opti
     Ok(None)
 }
 
-unsafe fn build_path(backend_data: &BackendData, appends: Vec<*const gchar>) -> Result<PathBuf> {
+unsafe fn build_path(backend_data: &PosixData, appends: Vec<*const gchar>) -> Result<PathBuf> {
     appends.iter().map(|p| read_str(*p)).fold(
         Ok(PathBuf::new().join(&backend_data.namespace)),
         |p1: Result<PathBuf>, p2: Result<String>| Ok(p1?.join(p2?)),

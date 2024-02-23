@@ -1,71 +1,47 @@
-use std::os::raw::c_void;
-
-use bindings::{
-    JBackend, JBackendComponent, JBackendType, JBackend__bindgen_ty_1,
-    JBackend__bindgen_ty_1__bindgen_ty_1 as ObjectBackend,
-};
-use log::info;
-
 #[allow(dead_code)]
 #[allow(nonstandard_style)]
 pub mod bindings;
 pub mod common;
-pub mod posix;
+pub mod test_facility;
 
-pub enum Backend {
-    Posix,
-    Buffered,
-    Mmap,
-    IoUring,
+pub mod prelude {
+    pub use crate::bindings::*;
+    pub use crate::common::prelude::*;
+    pub use crate::generate_backend;
+    pub use crate::ObjectBackend;
 }
 
-pub fn init() {
-    info!("test");
+pub mod testing {
+    pub use crate::test_facility::prelude::*;
 }
 
-pub fn create_backend() -> JBackend {
-    JBackend {
-        type_: JBackendType::J_BACKEND_TYPE_OBJECT,
-        component: JBackendComponent::J_BACKEND_COMPONENT_CLIENT,
-        // TODO data?
-        data: 1 as *mut c_void,
-        anon1: JBackend__bindgen_ty_1 {
-            object: get_backend(Backend::Posix),
-        },
-    }
-}
-
-generate_backend!(posix);
-
-pub fn get_backend(backend_type: Backend) -> ObjectBackend {
-    // TODO backends
-    match backend_type {
-        Backend::Posix => posix(),
-        Backend::Buffered => posix(),
-        Backend::Mmap => posix(),
-        Backend::IoUring => posix(),
-    }
-}
+use bindings::*;
+pub type ObjectBackend = JBackend__bindgen_ty_1__bindgen_ty_1;
 
 #[macro_export]
 macro_rules! generate_backend {
-    ($module_name: ident) => {
-        fn $module_name() -> ObjectBackend {
-            ObjectBackend {
-                backend_init: Some($module_name::prelude::j_init),
-                backend_fini: Some($module_name::prelude::j_fini),
-                backend_create: Some($module_name::prelude::j_create),
-                backend_open: Some($module_name::prelude::j_open),
-                backend_delete: Some($module_name::prelude::j_delete),
-                backend_close: Some($module_name::prelude::j_close),
-                backend_status: Some($module_name::prelude::j_status),
-                backend_sync: Some($module_name::prelude::j_sync),
-                backend_read: Some($module_name::prelude::j_read),
-                backend_write: Some($module_name::prelude::j_write),
-                backend_get_all: Some($module_name::prelude::j_get_all),
-                backend_get_by_prefix: Some($module_name::prelude::j_get_by_prefix),
-                backend_iterate: Some($module_name::prelude::j_iterate),
-            }
-        }
+    ($name: ident) => {
+        pub static mut BACKEND: JBackend = JBackend {
+            type_: JBackendType::J_BACKEND_TYPE_OBJECT,
+            component: JBackendComponent::J_BACKEND_COMPONENT_SERVER,
+            data: core::ptr::null_mut(),
+            anon1: JBackend__bindgen_ty_1 {
+                object: ObjectBackend {
+                    backend_init: Some($name::j_init),
+                    backend_fini: Some($name::j_fini),
+                    backend_create: Some($name::j_create),
+                    backend_open: Some($name::j_open),
+                    backend_delete: Some($name::j_delete),
+                    backend_close: Some($name::j_close),
+                    backend_status: Some($name::j_status),
+                    backend_sync: Some($name::j_sync),
+                    backend_read: Some($name::j_read),
+                    backend_write: Some($name::j_write),
+                    backend_get_all: Some($name::j_get_all),
+                    backend_get_by_prefix: Some($name::j_get_by_prefix),
+                    backend_iterate: Some($name::j_iterate),
+                },
+            },
+        };
     };
 }

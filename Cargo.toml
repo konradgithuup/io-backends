@@ -1,9 +1,36 @@
+[workspace]
+members = [
+    "jbackend-posix",
+    "jbackend-aio",
+    "jbackend-mmap",
+    "jbackend-io-uring",
+]
+default-members = [
+    "jbackend-posix",
+    "jbackend-aio",
+    "jbackend-mmap",
+    "jbackend-io-uring",
+]
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Konrad Ueltzen"]
+
 [package]
 name = "io-backends"
+authors = ["Konrad Ueltzen"]
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = ["posix"]
+posix = []
+aio = []
+mmap = []
+uring = []
+
 
 [build-dependencies]
 bindgen = "0.69.2"

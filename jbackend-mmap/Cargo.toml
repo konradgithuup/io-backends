@@ -1,0 +1,11 @@
+[package]
+name = "jbackend-mmap"
+description = "A JULEA backend using the mmap interface for memory mapped file I/O."
+version.workspace = true
+authors.workspace = true
+
+edition = "2021"
+[dependencies]
+io-backends = { path = ".." }
+log = "0.4.20"
+memmap2 = "0.9.4"

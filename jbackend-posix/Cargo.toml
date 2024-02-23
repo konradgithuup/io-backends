@@ -1,0 +1,10 @@
+[package]
+name = "jbackend-posix-io"
+description = "A JULEA backend using the POSIX I/O interface."
+version.workspace = true
+authors.workspace = true
+
+edition = "2021"
+[dependencies]
+io-backends = { path = ".." }
+log = "0.4.20"

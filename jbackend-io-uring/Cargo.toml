@@ -1,0 +1,11 @@
+[package]
+name = "jbackend-io-uring"
+description = "A JULEA backend using the io_uring interface."
+version.workspace = true
+authors.workspace = true
+
+edition = "2021"
+[dependencies]
+io-backends = { path = ".." }
+log = "0.4.20"
+io-uring = "0.6.3"
