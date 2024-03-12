@@ -1,9 +1,9 @@
-use std::{cmp::max, fs::File, io::Write, ops::DerefMut};
+use std::{cmp::max, fs::File, io::Write};
 
 const MAP_SIZE: usize = usize::pow(2, 20);
 
-use log::error;
-use memmap2::{MmapMut, MmapOptions};
+use log::debug;
+use memmap2::{MmapMut, MmapOptions, RemapOptions};
 
 use io_backends::prelude::*;
 
@@ -39,8 +39,28 @@ impl MmapFile {
             self.file.set_len(self.size as u64)?;
         }
 
-        error!("file size {}", self.file.metadata()?.len());
-        (&mut self.mmap.deref_mut()[offset..calc_size]).write_all(buf)?;
+        if self.mmap.len() <= calc_size {
+            debug!(
+                "calculated size exceeds memory map: {} <= {calc_size}",
+                self.mmap.len()
+            );
+            unsafe {
+                self.enlarge();
+            }
+        }
+
+        (&mut self.mmap[offset..calc_size]).write_all(buf)?;
         Ok(len)
+    }
+
+    unsafe fn enlarge(&mut self) {
+        debug!(
+            "resizing memory map {} => {}",
+            self.mmap.len(),
+            self.size * 2
+        );
+        let _ = self
+            .mmap
+            .remap(self.size * 2 as usize, RemapOptions::new().may_move(true));
     }
 }

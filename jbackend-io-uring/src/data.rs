@@ -92,11 +92,11 @@ impl UringContext {
     }
 
     pub fn write(&mut self, buf: &[u8], offset: u64) -> Result<UserData> {
-        let user_data = THREAD_URING
+        let result = THREAD_URING
             .try_with(|ring| self.async_write_internal(ring.borrow_mut(), buf, offset))
             .map_err(|e| BackendError::map(&e, Action::Internal))??;
 
-        Ok(user_data)
+        Ok(result)
     }
 
     fn async_write_internal(

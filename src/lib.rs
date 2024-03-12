@@ -25,6 +25,7 @@ macro_rules! generate_backend {
             type_: JBackendType::J_BACKEND_TYPE_OBJECT,
             component: JBackendComponent::J_BACKEND_COMPONENT_SERVER,
             data: core::ptr::null_mut(),
+            flags: JBackendFlags::J_BACKEND_FLAGS_DO_NOT_UNLOAD,
             anon1: JBackend__bindgen_ty_1 {
                 object: ObjectBackend {
                     backend_init: Some($name::j_init),

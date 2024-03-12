@@ -1,14 +1,13 @@
 use std::{
     ffi::CString,
     fmt::Display,
-    fs::{self, File, OpenOptions},
+    fs::{self, create_dir_all, File, OpenOptions},
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::PathBuf,
     ptr, slice,
-    str::from_utf8,
 };
 
-use log::{error, info};
+use log::{debug, error, info, trace};
 
 use io_backends::prelude::*;
 
@@ -60,6 +59,13 @@ unsafe fn backend_create(
     let path: PathBuf = build_path(backend_data, Vec::from([namespace, path]))
         .map_err(|e| e.set_action(Action::Create))?;
 
+    match path.parent() {
+        Some(dir) => create_dir_all(dir)?,
+        None => (),
+    }
+
+    debug!("Create file: {path:?}");
+
     let f: File = OpenOptions::new()
         .read(true)
         .append(true)
@@ -95,6 +101,13 @@ unsafe fn backend_open(
     path: *const gchar,
 ) -> Result<BackendObject> {
     let path = build_path(backend_data, Vec::from([namespace, path]))?;
+
+    match path.parent() {
+        Some(dir) => create_dir_all(dir)?,
+        None => (),
+    }
+
+    debug!("Create file: {path:?}");
 
     let f: File = OpenOptions::new()
         .read(true)
@@ -225,12 +238,17 @@ pub unsafe extern "C" fn j_write(
     offset: guint64,
     bytes_written: *mut guint64,
 ) -> gboolean {
-    error!("IIIII");
     cast_ptr!(backend_data, UringData);
     cast_ptr!(backend_object, BackendObject);
-    error!("OOOO");
+    trace!(
+        "Write {} b at {} to {}",
+        length,
+        offset,
+        &backend_object.path.to_str().unwrap()
+    );
+
     let buffer = buffer.cast::<u8>();
-    error!("EEEE");
+
     let runnable = |bf: &mut UringContext| {
         let offset = offset as usize;
         let buf = slice::from_raw_parts(buffer, length as usize);
@@ -238,15 +256,9 @@ pub unsafe extern "C" fn j_write(
             return Ok(0);
         }
 
-        let len = buf.len() - offset;
-        error!(
-            "in_buf len {} offset {} buf {}",
-            len,
-            offset,
-            from_utf8(buf).map_err(|e| BackendError::map(&e, Action::Write))?,
-        );
-        error!("BBBBB");
-        bf.write(buf, offset as _)
+        let r = bf.write(buf, offset as _);
+        trace!("Write done: {r:?}");
+        r
     };
 
     match backend_data

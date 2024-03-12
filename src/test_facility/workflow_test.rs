@@ -114,6 +114,13 @@ pub fn test_workflow(backend: &ObjectBackend, data_factory: impl Fn(String) -> *
             &temp,
         );
 
+        test_read(
+            "backend_newly_written",
+            &backend,
+            *backend_data,
+            *write_file,
+        );
+
         test_read("backend_read", &backend, *backend_data, *read_file);
 
         test_status("backend_status", &backend, *backend_data, *read_file);
@@ -339,7 +346,7 @@ fn test_write_sync(
         ),
     );
 
-    let test_input: &str = "Test world!";
+    let test_input: &str = "Hello, world!";
 
     unsafe {
         let mut buffer = String::from(test_input)

@@ -18,7 +18,7 @@ Some of the backends like io_uring are specific to the Linux kernel. Therefore, 
 - JULEA
   - libglib\-2.0\-dev
   - libbson\-dev
-- [Rust]() (stable)
+- [Rust](https://www.rust-lang.org/) (stable)
 
 (Cargo takes care of the remaining dependencies)
 

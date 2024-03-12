@@ -3,3 +3,6 @@ name = "jbackend-posix-aio"
 description = "A JULEA backend using the POSIX aio through libaio bindings."
 version.workspace = true
 authors.workspace = true
+
+[lib]
+crate-type = ["cdylib"]

@@ -1,22 +1,24 @@
 use std::{
     ffi::CString,
     fmt::Display,
-    fs::{self, File, OpenOptions},
-    io::Write,
+    fs::{self, create_dir_all, File, OpenOptions},
+    io::{Read, Write},
     os::{
         fd::AsRawFd,
         unix::fs::{FileExt, MetadataExt},
     },
-    path::PathBuf,
-    ptr, slice,
+    path::{Path, PathBuf},
+    ptr,
+    slice::{self, from_raw_parts},
 };
 
-use log::{error, info};
+use log::{debug, error, info, trace};
 
 use io_backends::prelude::*;
 
 // INIT
 
+#[no_mangle]
 pub unsafe extern "C" fn j_init(path: *const gchar, backend_data: *mut gpointer) -> gboolean {
     finish(backend_init(path), backend_data)
 }
@@ -24,6 +26,10 @@ pub unsafe extern "C" fn j_init(path: *const gchar, backend_data: *mut gpointer)
 unsafe fn backend_init(path: *const gchar) -> Result<PosixData> {
     let path = read_str(path).map_err(|e| e.set_action(Action::Init))?;
     info!("Initializing backend in namespace {path}");
+    if !Path::new(path.as_str()).is_dir() {
+        debug!("Creating namespace directory");
+        create_dir_all(path.as_str())?;
+    }
 
     Ok(PosixData {
         file_cache: FileCache::new(),
@@ -32,7 +38,7 @@ unsafe fn backend_init(path: *const gchar) -> Result<PosixData> {
 }
 
 // FINI
-
+#[no_mangle]
 pub unsafe extern "C" fn j_fini(backend_data: gpointer) {
     // though unnecessary, 'drop' makes it easier to understand, I think...
     info!("Releasing file cache");
@@ -40,7 +46,7 @@ pub unsafe extern "C" fn j_fini(backend_data: gpointer) {
 }
 
 // CREATE
-
+#[no_mangle]
 pub unsafe extern "C" fn j_create(
     backend_data: gpointer,
     namespace: *const gchar,
@@ -60,8 +66,13 @@ unsafe fn backend_create(
     namespace: *const gchar,
     path: *const gchar,
 ) -> Result<BackendObject> {
+    let dir: PathBuf = build_path(backend_data, Vec::from([namespace]))?;
+    create_dir_all(dir)?;
+
     let path: PathBuf = build_path(backend_data, Vec::from([namespace, path]))
         .map_err(|e| e.set_action(Action::Create))?;
+
+    debug!("Create new file: {path:?}");
 
     let f: File = OpenOptions::new()
         .read(true)
@@ -80,7 +91,7 @@ unsafe fn backend_create(
 }
 
 // OPEN
-
+#[no_mangle]
 pub unsafe extern "C" fn j_open(
     backend_data: gpointer,
     namespace: *const gchar,
@@ -99,9 +110,11 @@ unsafe fn backend_open(
 ) -> Result<BackendObject> {
     let path = build_path(backend_data, Vec::from([namespace, path]))?;
 
+    debug!("Open path: {path:?}");
+
     let f: File = OpenOptions::new()
         .read(true)
-        .append(true)
+        .write(true)
         .open(&path)
         .map_err(|e| BackendError::map(&e, Action::Open))?;
     let fd = f.as_raw_fd();
@@ -113,7 +126,7 @@ unsafe fn backend_open(
 }
 
 // DELETE
-
+#[no_mangle]
 pub unsafe extern "C" fn j_delete(backend_data: gpointer, backend_object: gpointer) -> gboolean {
     cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
@@ -133,7 +146,7 @@ unsafe fn backend_delete(backend_data: &PosixData, backend_object: &BackendObjec
 }
 
 // CLOSE
-
+#[no_mangle]
 pub unsafe extern "C" fn j_close(backend_data: gpointer, backend_object: gpointer) -> gboolean {
     cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
@@ -144,6 +157,7 @@ pub unsafe extern "C" fn j_close(backend_data: gpointer, backend_object: gpointe
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn j_status(
     backend_data: gpointer,
     backend_object: gpointer,
@@ -174,6 +188,7 @@ pub unsafe extern "C" fn j_status(
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn j_sync(backend_data: gpointer, backend_object: gpointer) -> gboolean {
     cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
@@ -188,6 +203,7 @@ pub unsafe extern "C" fn j_sync(backend_data: gpointer, backend_object: gpointer
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn j_read(
     backend_data: gpointer,
     backend_object: gpointer,
@@ -200,23 +216,37 @@ pub unsafe extern "C" fn j_read(
     cast_ptr!(backend_object, BackendObject);
 
     let buffer = buffer.cast::<u8>();
-    let runnable = |f: &File| {
+    let runnable = |f: &mut File| {
+        let mut s = String::new();
+        f.read_to_string(&mut s).unwrap();
+        if s.len() > 10 {
+            s = String::from(&s[..10]) + "..." + &s[s.len() - 10..];
+        }
+        trace!("Reading file: \"{}\"...", { s });
+
         f.read_at(slice::from_raw_parts_mut(buffer, length as usize), offset)
             .map_err(|e| BackendError::map(&e, Action::Read))
     };
 
     match backend_data
         .file_cache
-        .execute_on(&runnable, backend_object.raw_fd)
+        .execute_mut_on(&runnable, backend_object.raw_fd)
     {
         Ok(n_read) => {
             *bytes_read = n_read as u64;
+            debug!("Read {n_read} from file, offset {offset}");
+            trace!(
+                "Buffer: {:?}...",
+                std::str::from_utf8(from_raw_parts(buffer, usize::min(10, length as usize)))
+                    .unwrap()
+            );
             TRUE
         }
         Err(e) => handle_error(e.set_action(Action::Read)),
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn j_write(
     backend_data: gpointer,
     backend_object: gpointer,
@@ -228,10 +258,21 @@ pub unsafe extern "C" fn j_write(
     cast_ptr!(backend_data, PosixData);
     cast_ptr!(backend_object, BackendObject);
 
+    trace!(
+        "Write {} b at {} to {}",
+        length,
+        offset,
+        &backend_object.path.to_str().unwrap()
+    );
+
     let buffer = buffer.cast::<u8>();
+
     let runnable = |f: &mut File| {
-        f.write_at(slice::from_raw_parts(buffer, length as usize), offset)
-            .map_err(|e| BackendError::map(&e, Action::Write))
+        let r = f
+            .write_at(slice::from_raw_parts(buffer, length as usize), offset)
+            .map_err(|e| BackendError::map(&e, Action::Write));
+        trace!("Write done: {r:?}");
+        r
     };
 
     match backend_data
@@ -239,13 +280,14 @@ pub unsafe extern "C" fn j_write(
         .execute_mut_on(&runnable, backend_object.raw_fd)
     {
         Ok(n_written) => {
-            *bytes_written = n_written as u64;
+            *bytes_written += n_written as u64;
             TRUE
         }
         Err(e) => handle_error(e.set_action(Action::Write)),
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn j_get_all(
     backend_data: gpointer,
     namespace: *const gchar,
@@ -260,6 +302,7 @@ pub unsafe extern "C" fn j_get_all(
     )
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn j_get_by_prefix(
     backend_data: gpointer,
     namespace: *const gchar,
@@ -292,6 +335,7 @@ unsafe fn backend_get_iterator(
     })
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn j_iterate(
     _backend_data: gpointer,
     backend_iterator: gpointer,

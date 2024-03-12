@@ -1,3 +1,4 @@
 /target
 /src/bindings.rs
 /test_data
+/.cargo

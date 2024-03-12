@@ -2,16 +2,15 @@ use std::{
     cmp::min,
     ffi::CString,
     fmt::Display,
-    fs::{self, File, OpenOptions},
+    fs::{self, create_dir_all, File, OpenOptions},
     io::Write,
     ops::Deref,
     os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::PathBuf,
     ptr, slice,
-    str::from_utf8,
 };
 
-use log::{error, info};
+use log::{debug, error, info, trace};
 
 use io_backends::prelude::*;
 
@@ -64,6 +63,13 @@ unsafe fn backend_create(
     let path: PathBuf = build_path(backend_data, Vec::from([namespace, path]))
         .map_err(|e| e.set_action(Action::Create))?;
 
+    match path.parent() {
+        Some(dir) => create_dir_all(dir)?,
+        None => (),
+    }
+
+    debug!("Create new file: {path:?}");
+
     let f: File = OpenOptions::new()
         .read(true)
         .append(true)
@@ -100,6 +106,13 @@ unsafe fn backend_open(
 ) -> Result<BackendObject> {
     let path = build_path(backend_data, Vec::from([namespace, path]))?;
 
+    match path.parent() {
+        Some(dir) => create_dir_all(dir)?,
+        None => (),
+    }
+
+    debug!("Open file: {path:?}");
+
     let f: File = OpenOptions::new()
         .read(true)
         .append(true)
@@ -130,6 +143,8 @@ unsafe fn backend_delete(backend_data: &MmapData, backend_object: &BackendObject
         .file_cache
         .remove(backend_object.raw_fd)
         .map_err(|e| e.set_action(Action::Delete))?;
+
+    debug!("Deleting {}...", &backend_object.path.to_str().unwrap());
 
     fs::remove_file(&backend_object.path).map_err(|e| BackendError::map(&e, Action::Delete))?;
 
@@ -206,14 +221,17 @@ pub unsafe extern "C" fn j_read(
 ) -> gboolean {
     cast_ptr!(backend_data, MmapData);
     cast_ptr!(backend_object, BackendObject);
+    trace!(
+        "Read {}b at {} from {}",
+        length,
+        offset,
+        &backend_object.path.to_str().unwrap()
+    );
 
     let buffer = buffer.cast::<u8>();
     let runnable = |bf: &MmapFile| {
         let mut buf = slice::from_raw_parts_mut(buffer, length as usize);
         let offset = offset as usize;
-        if buf.len() <= offset {
-            return Ok(0);
-        }
 
         let end = min(bf.size, offset + length as usize);
 
@@ -243,6 +261,12 @@ pub unsafe extern "C" fn j_write(
 ) -> gboolean {
     cast_ptr!(backend_data, MmapData);
     cast_ptr!(backend_object, BackendObject);
+    trace!(
+        "Write {} b at {} to {}",
+        length,
+        offset,
+        &backend_object.path.to_str().unwrap()
+    );
 
     let buffer = buffer.cast::<u8>();
     let runnable = |bf: &mut MmapFile| {
@@ -252,15 +276,9 @@ pub unsafe extern "C" fn j_write(
             return Ok(0);
         }
 
-        let len = buf.len() - offset;
-        error!(
-            "in_buf len {} offset {} buf {}",
-            len,
-            offset,
-            from_utf8(buf).map_err(|e| BackendError::map(&e, Action::Write))?,
-        );
-
-        bf.write(buf, offset, len)
+        let r = bf.write(buf, offset, length as _);
+        trace!("Write done: {r:?}");
+        r
     };
 
     match backend_data
@@ -268,7 +286,7 @@ pub unsafe extern "C" fn j_write(
         .execute_mut_on(&runnable, backend_object.raw_fd)
     {
         Ok(n_written) => {
-            *bytes_written = n_written as u64;
+            *bytes_written += n_written as u64;
             TRUE
         }
         Err(e) => handle_error(e.set_action(Action::Write)),
