@@ -382,6 +382,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hostname"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c731c3e10504cc8ed35cfe2f1db4c9274c3d35fa486e3b31df46f068ef3e867"
+dependencies = [
+ "libc",
+ "match_cfg",
+ "winapi",
+]
+
+[[package]]
 name = "humantime"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -443,7 +454,9 @@ dependencies = [
  "assert_fs",
  "bindgen",
  "env_logger",
+ "hostname",
  "log",
+ "log4rs",
 ]
 
 [[package]]
@@ -469,7 +482,6 @@ dependencies = [
  "io-backends",
  "io-uring",
  "log",
- "log4rs",
 ]
 
 [[package]]
@@ -478,7 +490,6 @@ version = "0.1.0"
 dependencies = [
  "io-backends",
  "log",
- "log4rs",
  "memmap2",
 ]
 
@@ -492,7 +503,6 @@ version = "0.1.0"
 dependencies = [
  "io-backends",
  "log",
- "log4rs",
 ]
 
 [[package]]
@@ -590,6 +600,12 @@ dependencies = [
  "typemap-ors",
  "winapi",
 ]
+
+[[package]]
+name = "match_cfg"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffbee8634e0d45d258acb448e7eaab3fce7a0a467395d4d9f228e3c1f01fb2e4"
 
 [[package]]
 name = "memchr"

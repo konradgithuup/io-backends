@@ -44,7 +44,10 @@ pub fn to_cstring(s: &str) -> Result<CString> {
 
 #[macro_export]
 macro_rules! cast_ptr {
-    ($var: ident, $t: ident) => {
+    ($var: ident, $t:ident$(<$generic:tt>)+) => {
+        let $var = &*$var.cast::<$t$(<$generic>)?>();
+    };
+    ($var: ident, $t:ident) => {
         let $var = &*$var.cast::<$t>();
     };
 }

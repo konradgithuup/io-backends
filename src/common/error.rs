@@ -19,6 +19,8 @@ impl Display for BackendError {
     }
 }
 
+impl std::error::Error for BackendError {}
+
 impl From<std::io::Error> for BackendError {
     fn from(value: std::io::Error) -> Self {
         BackendError::map(&value, Action::Internal)

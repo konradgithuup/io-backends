@@ -12,7 +12,7 @@ use assert_fs::fixture::PathChild;
 use assert_fs::TempDir;
 
 use crate::bindings::{gpointer, JBackend__bindgen_ty_1__bindgen_ty_1 as ObjectBackend};
-use crate::common::prelude::{BackendIterator, BackendObject, PosixData, FALSE, TRUE};
+use crate::common::prelude::{BackendIterator, ObjectHandle, FALSE, TRUE};
 use log::{error, info, warn};
 
 pub fn test_workflow(backend: &ObjectBackend, data_factory: impl Fn(String) -> *mut gpointer) {
@@ -25,25 +25,25 @@ pub fn test_workflow(backend: &ObjectBackend, data_factory: impl Fn(String) -> *
 
     let backend_data = data_factory(String::from(temp.to_str().unwrap()));
 
-    let read_file: *mut gpointer = Box::into_raw(Box::new(BackendObject {
+    let read_file: *mut gpointer = Box::into_raw(Box::new(ObjectHandle {
         raw_fd: 0,
         path: PathBuf::new(),
     }))
     .cast::<gpointer>();
 
-    let write_file: *mut gpointer = Box::into_raw(Box::new(BackendObject {
+    let write_file: *mut gpointer = Box::into_raw(Box::new(ObjectHandle {
         raw_fd: 0,
         path: PathBuf::new(),
     }))
     .cast::<gpointer>();
 
-    let delete_file: *mut gpointer = Box::into_raw(Box::new(BackendObject {
+    let delete_file: *mut gpointer = Box::into_raw(Box::new(ObjectHandle {
         raw_fd: 0,
         path: PathBuf::new(),
     }))
     .cast::<gpointer>();
 
-    let create_file: *mut gpointer = Box::into_raw(Box::new(BackendObject {
+    let create_file: *mut gpointer = Box::into_raw(Box::new(ObjectHandle {
         raw_fd: 0,
         path: PathBuf::new(),
     }))
@@ -476,16 +476,8 @@ fn test_close(
             return;
         }
 
-        let backend_data = &*backend_data.cast::<PosixData>();
-        let backend_object = &*backend_object.cast::<BackendObject>();
-        handle(
-            "postcondition",
-            assert_eq(
-                backend_data.contains(backend_object.raw_fd),
-                false,
-                "fd still in cache",
-            ),
-        );
+        let ret = backend.backend_close.unwrap()(backend_data, backend_object);
+        handle("post condition", assert_eq(ret, FALSE, "return value"))
     }
 }
 
