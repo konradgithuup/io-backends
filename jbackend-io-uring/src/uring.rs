@@ -6,7 +6,6 @@ use std::{
         unix::fs::MetadataExt,
     },
     rc::Rc,
-    sync::atomic::AtomicU64,
 };
 
 use io_uring::{opcode, squeue::Flags, types, IoUring};
@@ -21,21 +20,22 @@ thread_local! {
 
 pub struct Uring {
     io_uring: IoUring,
-    user_data: AtomicU64,
+    user_data: u64,
 }
 
 impl Uring {
     fn new() -> LocalUring {
         Rc::new(RefCell::new(Uring {
             io_uring: IoUring::builder().setup_sqpoll(1000).build(8).unwrap(),
-            user_data: AtomicU64::new(0),
+            user_data: 0_u64,
         }))
     }
 
     fn read(&mut self, buffer: &mut [u8], fd: RawFd, offset: u64) -> Result<u64> {
-        let user_data = self
-            .user_data
-            .fetch_add(1, std::sync::atomic::Ordering::Acquire);
+        let user_data = {
+            self.user_data += 1;
+            self.user_data
+        };
 
         let read_op = opcode::Read::new(types::Fd(fd), buffer.as_mut_ptr(), buffer.len() as _)
             .offset(offset)
@@ -65,9 +65,10 @@ impl Uring {
     }
 
     fn write(&mut self, buffer: &[u8], fd: RawFd, offset: u64) -> Result<u64> {
-        let user_data = self
-            .user_data
-            .fetch_add(1, std::sync::atomic::Ordering::Acquire);
+        let user_data = {
+            self.user_data += 1;
+            self.user_data
+        };
 
         let write_op = opcode::Write::new(types::Fd(fd), buffer.as_ptr(), buffer.len() as _)
             .offset(offset)

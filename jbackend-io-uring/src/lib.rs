@@ -28,7 +28,7 @@ mod test {
     use crate::BACKEND;
 
     #[test]
-    fn test_mmap_workflow() {
+    fn test_uring_workflow() {
         let backend: ObjectBackend = unsafe { BACKEND.anon1.object };
         let data_factory = |namespace| {
             let data = Backend::<UringObject> {

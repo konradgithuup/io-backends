@@ -30,7 +30,7 @@ pub fn init_logger() -> Result<()> {
         .build(
             Root::builder()
                 .appender("logfile")
-                .build(LevelFilter::Trace),
+                .build(LevelFilter::Error),
         )
         .map_err(|e| BackendError::map(&e, Action::Init))?;
 

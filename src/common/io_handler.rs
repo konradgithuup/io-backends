@@ -1,10 +1,10 @@
 use std::{
-    collections::HashMap,
     fs::File,
     sync::{Arc, RwLock},
 };
 
 use log::{error, info};
+use rustc_hash::FxHashMap;
 
 use crate::common::error::Result;
 
@@ -26,14 +26,15 @@ pub trait BackendObject: Sized {
 }
 
 pub struct ObjectStore<T: BackendObject> {
-    files: Arc<RwLock<HashMap<i32, T>>>,
+    files: Arc<RwLock<FxHashMap<i32, T>>>,
 }
 
 impl<T: BackendObject> ObjectStore<T> {
     pub fn new() -> Self {
         info!("Initializing new object store");
+        let files: FxHashMap<i32, T> = FxHashMap::default();
         ObjectStore {
-            files: Arc::new(RwLock::new(HashMap::new())),
+            files: Arc::new(RwLock::new(files)),
         }
     }
 

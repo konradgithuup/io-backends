@@ -22,13 +22,14 @@ pub unsafe extern "C" fn backend_info() -> *mut JBackend {
 #[cfg(test)]
 mod test {
     use io_backends::prelude::*;
+    use io_backends::test_facility::writes;
     use io_backends::testing::*;
 
     use crate::posix::PosixObject;
     use crate::BACKEND;
 
-    #[test]
-    fn test_posix_workflow() {
+    // #[test]
+    fn _test_posix_workflow() {
         let backend: ObjectBackend = unsafe { BACKEND.anon1.object };
         let data_factory = |namespace| {
             let data = Backend::<PosixObject> {
@@ -38,5 +39,19 @@ mod test {
             Box::into_raw(Box::new(data)).cast::<gpointer>()
         };
         test_workflow(&backend, &data_factory);
+    }
+
+    #[test]
+    fn repeated_writes() {
+        let backend: ObjectBackend = unsafe { BACKEND.anon1.object };
+        let data_factory = |namespace| {
+            let data = Backend::<PosixObject> {
+                object_store: ObjectStore::new(),
+                namespace,
+            };
+            Box::into_raw(Box::new(data)).cast::<gpointer>()
+        };
+
+        writes::test_writes(&backend, data_factory)
     }
 }

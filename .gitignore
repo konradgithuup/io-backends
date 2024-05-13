@@ -2,3 +2,5 @@
 /src/bindings.rs
 /test_data
 /.cargo
+perf.*
+*.svg
