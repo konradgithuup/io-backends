@@ -2,7 +2,7 @@
 
 This project implements additional [JULEA](https://github.com/parcio/julea) Object-Backends.
 
-It consists of a root package and four packages implementing JULEA backends for POSIX I/O, POSIX aio (using libaio), mmap, and io_uring.
+It consists of a root package and four packages implementing JULEA backends for POSIX I/O, mmap, and io_uring.
 
 Building the project will generate a dynamic library for each backend that can then be plugged into JULEA (Refer to the JULEA documentation on how to provide backends to JULEA).
 

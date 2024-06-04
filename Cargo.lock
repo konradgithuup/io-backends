@@ -496,10 +496,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jbackend-posix-aio"
-version = "1.0.0"
-
-[[package]]
 name = "jbackend-posix-io"
 version = "1.0.0"
 dependencies = [

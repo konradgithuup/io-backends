@@ -1,16 +1,6 @@
 [workspace]
-members = [
-    "jbackend-posix",
-    "jbackend-aio",
-    "jbackend-mmap",
-    "jbackend-io-uring",
-]
-default-members = [
-    "jbackend-posix",
-    "jbackend-aio",
-    "jbackend-mmap",
-    "jbackend-io-uring",
-]
+members = ["jbackend-posix", "jbackend-mmap", "jbackend-io-uring"]
+default-members = ["jbackend-posix", "jbackend-mmap", "jbackend-io-uring"]
 
 [workspace.package]
 version = "1.0.0"
